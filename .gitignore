@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+last_versions.json
+*.xlsx
+!tests/fixtures/*.xlsx
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
