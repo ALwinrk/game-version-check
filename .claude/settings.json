@@ -1,0 +1,8 @@
+{
+  "enabledPlugins": {
+    "frontend-design-skills@claude-settings": true,
+    "python-skills@claude-settings": true,
+    "agent-browser@claude-settings": true,
+    "react-skills@claude-settings": true
+  }
+}

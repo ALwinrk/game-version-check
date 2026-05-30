@@ -11,49 +11,119 @@ from gvc_gui.config import (
     COL_NAME, COL_PACKAGE, COL_VER_NAME, COL_VER_CODE, COL_STATUS,
     COLUMN_HEADERS, COLUMN_WIDTHS, COLUMNS,
     ROW_UPDATE_BG, ROW_OK_BG, ROW_ERROR_BG, ROW_PENDING_BG,
-    CARD_TOTAL_BG, CARD_UPDATE_BG, CARD_OK_BG, CARD_ERROR_BG, CARD_TEXT,
-    FONT_NORMAL, FONT_SMALL, FONT_BOLD, FONT_HEADING,
+    CARD_INFO_BG, CARD_WARNING_BG, CARD_SUCCESS_BG, CARD_DANGER_BG,
+    BORDER_COLOR, SURFACE_BG, TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT_PRIMARY, ACCENT_HOVER, ACCENT_INFO, ACCENT_SUCCESS,
+    ACCENT_WARNING, ACCENT_DANGER,
+    FONT_NORMAL, FONT_SMALL, FONT_BOLD, FONT_CAPTION, FONT_STAT,
+    STOP_BTN_BG, STOP_BTN_HOVER,
 )
+
+# ── 辅助：CTk 元组 → 当前模式单色 ──────────────────────
+
+
+def _resolve(color) -> str:
+    """将 CTk (light, dark) 颜色元组解析为当前外观模式下的单色."""
+    if isinstance(color, tuple):
+        idx = 0 if ctk.get_appearance_mode() == "Light" else 1
+        return color[idx]
+    return color
+
+
+def _apply_ttk_style() -> None:
+    """应用 CTk 风格化的 ttk Treeview 样式."""
+    mode = ctk.get_appearance_mode()
+    is_dark = mode == "Dark"
+
+    bg = "#1E293B" if is_dark else "#FFFFFF"
+    fg = "#F1F5F9" if is_dark else "#0F172A"
+    heading_bg = "#0F172A" if is_dark else "#F1F5F9"
+    heading_fg = "#94A3B8" if is_dark else "#64748B"
+    select_bg = "#3B82F6"
+    select_fg = "#FFFFFF"
+
+    style = ttk.Style()
+    style.theme_use("clam")
+
+    style.configure("Treeview",
+        background=bg, foreground=fg, fieldbackground=bg,
+        borderwidth=0, font=FONT_NORMAL, rowheight=36,
+    )
+    style.configure("Treeview.Heading",
+        background=heading_bg, foreground=heading_fg,
+        font=FONT_SMALL, borderwidth=0, relief="flat", padding=(8, 6),
+    )
+    style.map("Treeview",
+        background=[("selected", select_bg)],
+        foreground=[("selected", select_fg)],
+    )
+    style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+
+    style.configure("Vertical.TScrollbar",
+        background=bg, troughcolor=bg, borderwidth=0, arrowsize=14,
+    )
+    style.configure("Horizontal.TScrollbar",
+        background=bg, troughcolor=bg, borderwidth=0, arrowsize=14,
+    )
 
 
 class StatsDashboard(ctk.CTkFrame):
-    """顶部统计卡片 — 总数 / 有更新 / 无变化 / 失败."""
+    """顶部统计卡片 — 总数 / 有更新 / 无变化 / 失败.
+
+    每张卡片带左侧彩色 accent 条 + Unicode 图标 + 大数字.
+    """
 
     def __init__(self, master, **kwargs) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
 
-        self._cards: dict[str, tuple[ctk.CTkFrame, ctk.CTkLabel, ctk.CTkLabel]] = {}
-
+        # (key, title, icon, accent_color, card_bg)
         specs = [
-            ("total", "总游戏数", "0", CARD_TOTAL_BG),
-            ("update", "有更新", "0", CARD_UPDATE_BG),
-            ("ok", "无变化", "0", CARD_OK_BG),
-            ("error", "获取失败", "0", CARD_ERROR_BG),
+            ("total",  "总游戏数", "≣", ACCENT_INFO,    CARD_INFO_BG),
+            ("update", "有更新",   "↑", ACCENT_WARNING, CARD_WARNING_BG),
+            ("ok",     "无变化",   "✓", ACCENT_SUCCESS, CARD_SUCCESS_BG),
+            ("error",  "获取失败", "✗", ACCENT_DANGER,  CARD_DANGER_BG),
         ]
 
-        for key, title, value, bg in specs:
-            card = ctk.CTkFrame(self, fg_color=bg, corner_radius=10)
+        self._cards: dict[str, tuple[ctk.CTkFrame, ctk.CTkLabel, ctk.CTkLabel]] = {}
+
+        for key, title, icon, accent, card_bg in specs:
+            # 外层卡片 — 边框 + 浅底色
+            card = ctk.CTkFrame(
+                self, fg_color=card_bg, corner_radius=10,
+                border_width=1, border_color=BORDER_COLOR,
+            )
             card.pack(side="left", fill="both", expand=True, padx=5, pady=4)
 
+            # 左侧彩色 accent 条
+            accent_bar = ctk.CTkFrame(card, width=5, fg_color=accent, corner_radius=0)
+            accent_bar.pack(side="left", fill="y")
+            accent_bar.pack_propagate(False)
+
+            # 内容区
+            content = ctk.CTkFrame(card, fg_color="transparent")
+            content.pack(side="left", fill="both", expand=True, padx=(12, 12), pady=8)
+
+            ctk.CTkLabel(
+                content, text=icon,
+                font=("Segoe UI Symbol", 18),
+                text_color=accent, anchor="w",
+            ).pack(anchor="w", pady=(2, 0))
+
             title_lbl = ctk.CTkLabel(
-                card, text=title,
-                font=FONT_SMALL,
-                text_color=CARD_TEXT,
+                content, text=title,
+                font=FONT_CAPTION,
+                text_color=TEXT_SECONDARY, anchor="w",
             )
-            title_lbl.pack(anchor="center", pady=(8, 0))
+            title_lbl.pack(anchor="w")
 
             value_lbl = ctk.CTkLabel(
-                card, text=value,
-                font=FONT_HEADING,
-                text_color=CARD_TEXT,
+                content, text="—",
+                font=FONT_STAT,
+                text_color=TEXT_PRIMARY, anchor="w",
             )
-            value_lbl.pack(anchor="center", pady=(0, 8))
+            value_lbl.pack(anchor="w", pady=(0, 2))
 
             self._cards[key] = (card, title_lbl, value_lbl)
-
-        # 等宽分布
-        for i in range(4):
-            self.grid_columnconfigure(i, weight=1)
 
     def update(self, total: int = -1, updated: int = -1, ok: int = -1, error: int = -1) -> None:
         """更新卡片数字，传 -1 表示不更新."""
@@ -71,7 +141,8 @@ class FilePickerFrame(ctk.CTkFrame):
     """文件选择 + 操作按钮."""
 
     def __init__(self, master, **kwargs) -> None:
-        super().__init__(master, corner_radius=10, **kwargs)
+        super().__init__(master, corner_radius=10,
+                         border_width=1, border_color=BORDER_COLOR, **kwargs)
 
         # 标题行
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -85,7 +156,7 @@ class FilePickerFrame(ctk.CTkFrame):
         self._info_label = ctk.CTkLabel(
             header, text="",
             font=FONT_SMALL,
-            text_color="gray",
+            text_color=TEXT_SECONDARY,
         )
         self._info_label.pack(side="right")
 
@@ -109,8 +180,9 @@ class FilePickerFrame(ctk.CTkFrame):
         self._browse_btn.pack(side="left", padx=2)
 
         self._start_btn = ctk.CTkButton(
-            action_row, text=" 开始排查 ", width=100,
+            action_row, text="▶  开始排查", width=110,
             font=FONT_BOLD,
+            fg_color=ACCENT_PRIMARY, hover_color=ACCENT_HOVER,
             command=self._on_start,
         )
         self._start_btn.pack(side="left", padx=2)
@@ -118,7 +190,7 @@ class FilePickerFrame(ctk.CTkFrame):
         self._stop_btn = ctk.CTkButton(
             action_row, text=" 停止 ", width=60,
             font=FONT_NORMAL,
-            fg_color="#DC3545", hover_color="#B02A37",
+            fg_color=STOP_BTN_BG, hover_color=STOP_BTN_HOVER,
             command=self._on_stop,
             state="disabled",
         )
@@ -169,15 +241,22 @@ class FilePickerFrame(ctk.CTkFrame):
 
 
 class GameTableFrame(ctk.CTkFrame):
-    """游戏列表表格."""
+    """游戏列表表格 — CTk 风格化 ttk.Treeview."""
 
     def __init__(self, master, **kwargs) -> None:
         super().__init__(master, corner_radius=10, **kwargs)
+
+        # 应用 CTk 风格化 ttk 样式
+        _apply_ttk_style()
 
         # 表头标题
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=(6, 2))
         ctk.CTkLabel(header, text=" 游戏排查结果", font=FONT_BOLD).pack(side="left")
+        self._stats_hint = ctk.CTkLabel(
+            header, text="", font=FONT_CAPTION, text_color=TEXT_SECONDARY,
+        )
+        self._stats_hint.pack(side="right")
 
         # Treeview + 滚动条（放在子 frame 中用 grid 管理）
         tree_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -200,25 +279,36 @@ class GameTableFrame(ctk.CTkFrame):
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew", padx=(10, 0))
 
-        # 行样式
+        # 行样式（解析 CTk 元组为当前模式单色）
         self._tag_update = "update"
         self._tag_ok = "ok"
         self._tag_error = "error"
         self._tag_pending = "pending"
-        self._tree.tag_configure(self._tag_update, background=ROW_UPDATE_BG)
-        self._tree.tag_configure(self._tag_ok, background=ROW_OK_BG)
-        self._tree.tag_configure(self._tag_error, background=ROW_ERROR_BG)
-        self._tree.tag_configure(self._tag_pending, background=ROW_PENDING_BG)
+        self._refresh_tags()
 
         # 右键菜单
-        self._ctx_menu = tk.Menu(self._tree, tearoff=0)
+        self._ctx_menu = tk.Menu(self._tree, tearoff=0, font=FONT_SMALL)
         self._ctx_menu.add_command(label=" 重新排查此游戏", command=self._on_recheck)
         self._ctx_menu.add_command(label=" 复制包名", command=self._on_copy_pkg)
         self._tree.bind("<Button-3>", self._show_ctx)
         self._tree.bind("<Button-2>", self._show_ctx)
 
+        # 外观切换回调
+        ctk.AppearanceModeTracker.add(self._on_appearance_changed, self)
+
         self._on_recheck_cb: callable | None = None
         self._on_copy_cb: callable | None = None
+
+    def _refresh_tags(self) -> None:
+        """使用当前外观模式下的颜色重新配置行标签."""
+        self._tree.tag_configure(self._tag_update, background=_resolve(ROW_UPDATE_BG))
+        self._tree.tag_configure(self._tag_ok, background=_resolve(ROW_OK_BG))
+        self._tree.tag_configure(self._tag_error, background=_resolve(ROW_ERROR_BG))
+        self._tree.tag_configure(self._tag_pending, background=_resolve(ROW_PENDING_BG))
+
+    def _on_appearance_changed(self) -> None:
+        _apply_ttk_style()
+        self._refresh_tags()
 
     # ── API ──
 
@@ -257,6 +347,13 @@ class GameTableFrame(ctk.CTkFrame):
                 f" {result.current_backend_version_code}",
                 f" {detail}",
             ), tags=(tag,))
+
+            # 更新表格头统计提示
+            s = self.get_stats()
+            done = s["total"] - s["pending"]
+            self._stats_hint.configure(
+                text=f"{done}/{s['total']} 完成"
+            )
         except Exception:
             pass
 

@@ -85,10 +85,18 @@ def extract_version_code(html: str) -> str | None:
     for m in re.finditer(r'(\d+\.\d+\.\d+)\s*[\(（]\s*(\d{3,12})\s*[\)）]', html):
         return m.group(2)
 
-    # 模式 3：data-versioncode="NNNNNN"
+    # 模式 3a：data-dt-versioncode="NNNNNN"（APKPure 搜索页）
+    m = re.search(r'data-dt-versioncode\s*=\s*["\']?(\d{3,12})', html, re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # 模式 3b：data-versioncode="NNNNNN"
     m = re.search(r'data-versioncode\s*=\s*["\']?(\d{3,12})', html, re.IGNORECASE)
     if m:
         return m.group(1)
+
+    # 模式 3c：data-dt-version="x.y.z" — 仅提取数字部分作为 version code
+    # （APKPure 有时 version name 就是纯数字 code）
 
     # 模式 4：<meta> 标签内嵌 versionCode
     m = re.search(
@@ -126,8 +134,11 @@ def extract_version_code(html: str) -> str | None:
     if m:
         return m.group(1)
 
-    # 模式 10：宽松兜底 — version/ver/vc/code 关键词附近的大数字
-    m = re.search(r'(?:version|ver\b|vc|code).{0,30}?(\d{5,12})\b', html, re.IGNORECASE)
+    # 模式 10：兜底 — version/ver/vc/code 关键词后的 :或= 后接大数字
+    m = re.search(
+        r'(?:version|ver|vc|code)\s*[：:=]\s*(\d{4,12})\b',
+        html, re.IGNORECASE,
+    )
     if m:
         return m.group(1)
 

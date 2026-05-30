@@ -17,7 +17,9 @@ from gvc.models import GameResult
 from gvc_gui.config import (
     WINDOW_TITLE, DEFAULT_GEOMETRY, MIN_WIDTH, MIN_HEIGHT,
     APPEARANCE_MODE, COLOR_THEME, POLL_INTERVAL,
-    FONT_NORMAL, FONT_SMALL, FONT_BOLD,
+    FONT_NORMAL, FONT_SMALL, FONT_BOLD, FONT_CAPTION,
+    BG_PRIMARY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_DISABLED,
+    STATUS_BAR_BG,
 )
 from gvc_gui.dialogs import (
     SettingsDialog, SingleCheckDialog, AboutDialog,
@@ -49,6 +51,7 @@ class MainApplication(ctk.CTk):
         self.title(WINDOW_TITLE)
         self.geometry(DEFAULT_GEOMETRY)
         self.minsize(MIN_WIDTH, MIN_HEIGHT)
+        self.configure(fg_color=BG_PRIMARY)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # ── 状态 ──
@@ -73,24 +76,46 @@ class MainApplication(ctk.CTk):
     # ══════════════════════════════════════════════════════════
 
     def _build_menu(self) -> None:
-        menubar = tk.Menu(self, font=FONT_SMALL)
+        is_dark = ctk.get_appearance_mode() == "Dark"
+        menu_bg = "#1E293B" if is_dark else "#FFFFFF"
+        menu_fg = "#F1F5F9" if is_dark else "#0F172A"
+        menu_active_bg = "#334155" if is_dark else "#E2E8F0"
+        menu_active_fg = "#FFFFFF" if is_dark else "#0F172A"
 
-        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar = tk.Menu(
+            self, font=FONT_SMALL,
+            bg=menu_bg, fg=menu_fg,
+            activebackground=menu_active_bg,
+            activeforeground=menu_active_fg,
+            borderwidth=0, relief="flat",
+            activeborderwidth=0,
+        )
+
+        def _submenu() -> tk.Menu:
+            return tk.Menu(
+                menubar, tearoff=0,
+                bg=menu_bg, fg=menu_fg,
+                activebackground=menu_active_bg,
+                activeforeground=menu_active_fg,
+                font=FONT_SMALL,
+            )
+
+        file_menu = _submenu()
         file_menu.add_command(label=" 打开表格…", command=self._on_open_file)
         file_menu.add_command(label=" 保存结果到 Excel", command=self._on_save_results)
         file_menu.add_separator()
         file_menu.add_command(label=" 退出", command=self._on_close)
         menubar.add_cascade(label=" 文件 ", menu=file_menu)
 
-        check_menu = tk.Menu(menubar, tearoff=0)
+        check_menu = _submenu()
         check_menu.add_command(label=" 单独排查…", command=self._on_single_check)
         menubar.add_cascade(label=" 排查 ", menu=check_menu)
 
-        settings_menu = tk.Menu(menubar, tearoff=0)
+        settings_menu = _submenu()
         settings_menu.add_command(label=" 选项…", command=self._on_settings)
         menubar.add_cascade(label=" 设置 ", menu=settings_menu)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu = _submenu()
         help_menu.add_command(label=" 关于", command=self._on_about)
         menubar.add_cascade(label=" 帮助 ", menu=help_menu)
 
@@ -126,16 +151,41 @@ class MainApplication(ctk.CTk):
         )
 
         # ROW 4 — 状态栏
-        status_frame = ctk.CTkFrame(self, height=28, corner_radius=0,
-                                    fg_color=("#E8E8E8", "#2B2B2B"))
+        status_frame = ctk.CTkFrame(
+            self, height=32, corner_radius=0,
+            fg_color=STATUS_BAR_BG,
+        )
         status_frame.grid(row=4, column=0, sticky="ew")
         status_frame.grid_propagate(False)
 
-        self._status_label = ctk.CTkLabel(
-            status_frame, text=" 就绪 | 请选择 Excel 表格文件开始排查",
-            font=FONT_SMALL, anchor="w",
+        # 左侧：状态圆点 + 文字
+        left = ctk.CTkFrame(status_frame, fg_color="transparent")
+        left.pack(side="left", fill="y", padx=(12, 0))
+
+        self._status_dot = ctk.CTkLabel(
+            left, text="●", font=("", 10),
+            text_color=("#64748B", "#94A3B8"),
+            width=16,
         )
-        self._status_label.pack(side="left", fill="x", padx=10, pady=2)
+        self._status_dot.pack(side="left")
+
+        self._status_label = ctk.CTkLabel(
+            left, text=" 就绪 | 请选择 Excel 表格文件开始排查",
+            font=FONT_SMALL, anchor="w",
+            text_color=TEXT_SECONDARY,
+        )
+        self._status_label.pack(side="left", fill="x")
+
+        # 右侧：外观模式
+        right = ctk.CTkFrame(status_frame, fg_color="transparent")
+        right.pack(side="right", padx=(0, 12))
+        self._mode_label = ctk.CTkLabel(
+            right, text="", font=FONT_CAPTION, text_color=TEXT_DISABLED,
+        )
+        self._mode_label.pack(side="right")
+
+        ctk.AppearanceModeTracker.add(self._on_appearance_changed, self)
+        self._update_mode_indicator()
 
     # ══════════════════════════════════════════════════════════
     # 消息轮询
@@ -175,6 +225,7 @@ class MainApplication(ctk.CTk):
             )
         elif msg.type == "error":
             self._progress_view.log_error(msg.package, msg.error_text)
+            self._set_status_dot("error")
             self._status_label.configure(
                 text=f" [{msg.index}/{msg.total}] {msg.package} — 查询失败"
             )
@@ -219,6 +270,7 @@ class MainApplication(ctk.CTk):
         self._table.populate(rows_data)
         self._progress_view.reset(len(rows_data))
         self._stats.reset()
+        self._set_status_dot("active")
         self._status_label.configure(text=f" 开始排查… 共 {len(rows_data)} 款游戏")
 
         max_workers = self._settings.get("max_game_workers", 3)
@@ -230,6 +282,7 @@ class MainApplication(ctk.CTk):
             self._worker.cancel()
         self._running = False
         self._file_picker.set_running(False)
+        self._set_status_dot("muted")
         self._status_label.configure(text=" 已手动停止")
 
     def _on_done(self) -> None:
@@ -240,6 +293,7 @@ class MainApplication(ctk.CTk):
         updated = s["update"]
         failed = s["error"]
         total = s["total"]
+        self._set_status_dot("success" if failed == 0 else "muted")
         self._progress_view.set_done(total, updated, failed)
 
         msg = f" 完成 — 共 {total} 款"
@@ -374,6 +428,26 @@ class MainApplication(ctk.CTk):
             return
         dialog = SingleCheckDialog(self)
         dialog._pkg_var.set(pkg)
+
+    def _update_mode_indicator(self) -> None:
+        self._mode_label.configure(text=f" {ctk.get_appearance_mode()} mode ")
+
+    def _set_status_dot(self, color: str) -> None:
+        """设置状态圆点颜色: muted / active / success / error."""
+        colors = {
+            "muted":   ("#64748B", "#94A3B8"),
+            "active":  ("#3B82F6", "#60A5FA"),
+            "success": ("#22C55E", "#4ADE80"),
+            "error":   ("#EF4444", "#F87171"),
+        }
+        self._status_dot.configure(text_color=colors.get(color, colors["muted"]))
+
+    def _on_appearance_changed(self) -> None:
+        self._update_mode_indicator()
+        self._build_menu()
+        # 刷新 ttk Treeview 样式
+        from gvc_gui.main_view import _apply_ttk_style
+        _apply_ttk_style()
 
     def _on_close(self) -> None:
         if self._running:

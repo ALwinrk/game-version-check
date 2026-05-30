@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "PowerShell(pip install *)",
-      "PowerShell(2>&1 *)"
+      "PowerShell(2>&1 *)",
+      "Bash(python -c ' *)",
+      "Bash(export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897)"
     ]
   }
 }

@@ -10,7 +10,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from gvc.config import COL_CURRENT, COL_CURRENT_VC, COL_NAME, COL_PACKAGE
 from gvc.logging_setup import get_logger
-from gvc.models import GameResult
+from gvc.models import GameResult, SourceResult
 from gvc.version import best_version, normalize
 
 logger = get_logger()

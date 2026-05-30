@@ -1,4 +1,4 @@
-"""HTTP 客户端 — 会话管理、重试、UA 轮换."""
+"""HTTP 客户端 — 会话管理、重试、UA 轮换、Cloudflare 检测."""
 
 from __future__ import annotations
 
@@ -16,6 +16,38 @@ except ImportError:
     cf_requests = None
 
 logger = get_logger()
+
+# ── Cloudflare 检测 ──────────────────────────────────────
+
+_CF_SIGNATURES: list[str] = [
+    "cf-browser-verify",
+    "Cloudflare",
+    "Attention Required",
+    "cf-challenge",
+    "cf_captcha",
+    "cf-wrapper",
+    "Checking your browser",
+    "DDoS protection",
+    "Just a moment",
+]
+
+
+def is_cloudflare_block(html: str) -> bool:
+    """检测是否为 Cloudflare JS 挑战页面.
+
+    Cloudflare 的 JS 挑战即使是 curl_cffi 模拟 Chrome 也无法绕过，
+    检测到后应直接判定为不可达，避免浪费重试时间。
+
+    Args:
+        html: HTTP 响应正文.
+
+    Returns:
+        True 如果检测到 Cloudflare 拦截特征.
+    """
+    if len(html) > 20000:  # 正常页面一般 > 20KB
+        return False
+    html_lower = html.lower()
+    return any(sig.lower() in html_lower for sig in _CF_SIGNATURES)
 
 _USER_AGENTS: list[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -81,11 +113,12 @@ def http_get(url: str) -> tuple[int, str]:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 session = _init_session()
-                resp = session.get(url, timeout=(5, REQUEST_TIMEOUT), proxies=proxies)
+                resp = session.get(url, timeout=REQUEST_TIMEOUT, proxies=proxies)
                 if resp.status_code == 200 and len(resp.text) > 500:
                     return resp.status_code, resp.text
                 if resp.status_code == 403:
                     last_error = f"HTTP 403 (attempt {attempt})"
+                    # 不在此处判定 CF，留给 curl_cffi 阶段尝试（模拟 Chrome 可能绕过）
                     break
                 classification = _classify_http_error(resp.status_code)
                 if classification == "fatal":
@@ -110,6 +143,9 @@ def http_get(url: str) -> tuple[int, str]:
                 if resp.status_code == 200 and len(resp.text) > 500:
                     logger.debug("curl_cffi success on %s", url[:60])
                     return resp.status_code, resp.text
+                # Cloudflare JS 挑战 — 即使 curl_cffi 模拟 Chrome 也无法绕过
+                if resp.status_code == 403 and is_cloudflare_block(resp.text):
+                    return 0, f"Cloudflare blocked: {host}"
                 classification = _classify_http_error(resp.status_code)
                 if classification == "fatal":
                     return resp.status_code, resp.text
