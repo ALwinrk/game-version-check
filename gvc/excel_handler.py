@@ -207,17 +207,11 @@ def process_excel(filepath: str) -> None:
                 logger.error("查询 %s 失败: %s", pkg, e)
                 source_results = {}
 
-            r = GameResult(
-                package=pkg,
+            r = GameResult.from_source_results(
+                pkg, source_results,
                 name=pkg_to_name.get(pkg, ""),
-                current_backend_version=pkg_to_current.get(pkg, ""),
-                current_backend_version_code=pkg_to_current_vc.get(pkg, ""),
-                google=source_results.get("Google Play", SourceResult()),
-                apkpure=source_results.get("APKPure", SourceResult()),
-                apkcombo=source_results.get("APKCombo", SourceResult()),
-                apkvision=source_results.get("APKVision", SourceResult()),
-                apkmirror=source_results.get("APKMirror", SourceResult()),
-                apkdl=source_results.get("APKDL", SourceResult()),
+                current_version=pkg_to_current.get(pkg, ""),
+                current_version_code=pkg_to_current_vc.get(pkg, ""),
             )
             results.append(r)
 

@@ -51,32 +51,3 @@ def save_history(records: dict[str, dict[str, Any]]) -> None:
         logger.error("保存历史文件失败: %s", e)
 
 
-def update_history(
-    package: str,
-    version: str,
-    version_code: str | None = None,
-    updated_ts: int | None = None,
-) -> None:
-    """更新单个包的历史记录."""
-    history = load_history()
-    history[package] = {
-        "version": version,
-        "version_code": version_code,
-        "updated_ts": updated_ts,
-        "last_check": datetime.now(timezone.utc).isoformat(),
-    }
-    save_history(history)
-
-
-def get_last_version(package: str) -> str:
-    """获取某个包上一次记录的版本号."""
-    history = load_history()
-    record = history.get(package, {})
-    return record.get("version", "") if isinstance(record, dict) else ""
-
-
-def get_last_version_code(package: str) -> str:
-    """获取某个包上一次记录的 version code."""
-    history = load_history()
-    record = history.get(package, {})
-    return record.get("version_code", "") if isinstance(record, dict) else ""

@@ -41,6 +41,21 @@ VERSIONS_FILE: str = os.environ.get("GVC_VERSIONS_FILE", "last_versions.json")
 # ── 日志 ─────────────────────────────────────────────────
 LOG_LEVEL: str = os.environ.get("GVC_LOG_LEVEL", "INFO")
 
+# ── 慢速源（StealthySession）───────────────────────────────
+ENABLE_STEALTH_SOURCES: bool = os.environ.get("GVC_DISABLE_STEALTH", "") != "1"
+STEALTH_EARLY_RETURN: bool = os.environ.get("GVC_STEALTH_EARLY_RETURN", "1") == "1"
+STEALTH_TIMEOUT: float = _env_float("GVC_STEALTH_TIMEOUT", 15.0)  # 单个慢速源超时
+
+# ── 下载 ─────────────────────────────────────────────────
+DOWNLOAD_DIR: str = os.environ.get("GVC_DOWNLOAD_DIR", "./downloads")
+DOWNLOAD_MANAGER: str = os.environ.get("GVC_DOWNLOAD_MANAGER", "")  # fdm / idm / aria2 / motrix / auto
+ALLOW_32BIT: bool = os.environ.get("GVC_ALLOW_32BIT", "0") == "1"
+
+# ── 熔断器 ───────────────────────────────────────────────
+CIRCUIT_BREAKER_ENABLED: bool = os.environ.get("GVC_NO_CIRCUIT", "") != "1"
+CIRCUIT_THRESHOLD: int = _env_int("GVC_CIRCUIT_THRESHOLD", 3)  # 连续失败 N 次触发
+CIRCUIT_COOLDOWN: float = _env_float("GVC_CIRCUIT_COOLDOWN", 30.0)  # 冷却秒数
+
 # ── 代理 ─────────────────────────────────────────────────
 # 注意：代理值每次调用 get_proxies() 时实时读取，方便 GUI 运行时修改
 

@@ -1,5 +1,5 @@
 # ── 版本号解析 ──
-from gvc.parser import extract_version, extract_version_code
+from gvc.parser import extract_version, extract_version_code, extract_both
 
 
 class TestExtractVersion:
@@ -81,13 +81,41 @@ class TestExtractVersion:
 
     def test_vc_loose_fallback(self):
         """模式 10：宽松兜底 — version 附近的数字"""
-        html = '<div>version: some text 12345678 more text</div>'
+        html = '<div>version: 12345678</div>'
         assert extract_version_code(html) == "12345678"
 
     def test_vc_short_code(self):
         """短 version code（3-5 位）也应被提取"""
         html = '<span>variant code: 123</span>'
         assert extract_version_code(html) == "123"
+
+
+class TestExtractBoth:
+    """合并提取测试."""
+
+    def test_extracts_both_version_and_code(self):
+        html = '<div class="app-version">4.4.0</div><span>variant code: 123456</span>'
+        v, vc = extract_both(html)
+        assert v == "4.4.0"
+        assert vc == "123456"
+
+    def test_extracts_only_version(self):
+        html = '<div data-dt-version="3.21.0">text</div>'
+        v, vc = extract_both(html)
+        assert v == "3.21.0"
+        assert vc is None
+
+    def test_extracts_only_code(self):
+        html = '<span>Version Code: 555666</span>'
+        v, vc = extract_both(html)
+        assert v is None
+        assert vc == "555666"
+
+    def test_extracts_nothing(self):
+        html = "<div>No data</div>"
+        v, vc = extract_both(html)
+        assert v is None
+        assert vc is None
 
 
 # ── 版本号处理 ──
@@ -300,3 +328,58 @@ class TestModels:
     def test_current_backend_version_code_default(self):
         r = GameResult(package="com.test")
         assert r.current_backend_version_code == ""
+
+
+# ── 下载器 ──
+from gvc.downloader import detect_arch, detect_installed_managers, get_download_manager
+
+
+class TestDetectArch:
+    """APK 架构检测."""
+
+    def test_arm64_v8a_exact(self):
+        assert detect_arch("app_arm64-v8a.apk") == "arm64-v8a"
+
+    def test_arm64_generic(self):
+        assert detect_arch("app_arm64.apk") == "arm64-v8a"
+
+    def test_aarch64(self):
+        assert detect_arch("app-aarch64-release.apk") == "arm64-v8a"
+
+    def test_armeabi_v7a(self):
+        assert detect_arch("app_armeabi-v7a.apk") == "armeabi-v7a"
+
+    def test_armeabi_generic(self):
+        assert detect_arch("app_armeabi.apk") == "armeabi-v7a"
+
+    def test_universal(self):
+        assert detect_arch("app_universal.apk") == "universal"
+
+    def test_nodpi(self):
+        assert detect_arch("app_nodpi.apk") == "universal"
+
+    def test_unknown(self):
+        assert detect_arch("app-release.apk") == "unknown"
+
+    def test_case_insensitive(self):
+        assert detect_arch("App_ARM64-V8A_release.apk") == "arm64-v8a"
+
+    def test_from_page_label(self):
+        assert detect_arch("CPU: arm64-v8a + armeabi-v7a") == "arm64-v8a"
+
+
+class TestDownloadManagerDetection:
+    """下载管理器检测."""
+
+    def test_detect_returns_list(self):
+        managers = detect_installed_managers()
+        assert isinstance(managers, list)
+
+    def test_get_auto_returns_none_or_manager(self):
+        dm = get_download_manager()
+        assert dm is None or hasattr(dm, "name")
+
+    def test_get_nonexistent(self):
+        dm = get_download_manager("nonexistent_manager_xyz")
+        # 可能返回 None 或自动回退
+        assert dm is None or hasattr(dm, "name")

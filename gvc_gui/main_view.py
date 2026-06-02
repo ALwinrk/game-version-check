@@ -355,7 +355,8 @@ class GameTableFrame(ctk.CTkFrame):
                 text=f"{done}/{s['total']} 完成"
             )
         except Exception:
-            pass
+            import logging
+            logging.getLogger("gvc").exception("更新表格行 %d 失败", index)
 
     def get_selected_package(self) -> str | None:
         sel = self._tree.selection()

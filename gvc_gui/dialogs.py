@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tkinter as tk
 from tkinter import messagebox
 
@@ -13,9 +14,19 @@ from gvc_gui.config import (
     FONT_FAMILY, FONT_HEADING, FONT_NORMAL, FONT_SMALL, FONT_BOLD,
     BORDER_COLOR, TEXT_SECONDARY, TEXT_PRIMARY,
 )
+from gvc_gui.main_view import _resolve
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "gvc_gui_settings.json")
+
+def _get_settings_path() -> str:
+    """获取设置文件的可靠路径（兼容源码运行和 PyInstaller EXE）."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "gvc_gui_settings.json")
+
+
+SETTINGS_FILE = _get_settings_path()
 
 
 def load_settings() -> dict:
@@ -39,96 +50,131 @@ def save_settings(settings: dict) -> None:
 
 
 class SettingsDialog(ctk.CTkToplevel):
-    """设置对话框."""
+    """设置对话框 — 使用可滚动区域确保保存按钮始终可见."""
 
     def __init__(self, master, settings: dict, on_save: callable) -> None:
         super().__init__(master)
         self.title("设置")
-        self.geometry("420x540")
+        self.geometry("480x520")
         self.resizable(False, False)
         self.grab_set()
 
         self._settings = dict(settings)
         self._on_save = on_save
 
+        # 让对话框整体可以拉伸，滚动区占满剩余空间
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # ═══ 可滚动内容区 ═══
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))
+
         # ── 外观 ──
-        self._add_section("外观")
-        ctk.CTkLabel(self, text="外观模式",
-                     font=FONT_NORMAL).pack(anchor="w", padx=20, pady=(4, 2))
+        self._add_section(scroll, "外观")
+        ctk.CTkLabel(scroll, text="外观模式",
+                     font=FONT_NORMAL).pack(anchor="w", padx=16, pady=(4, 2))
         self._mode_var = ctk.StringVar(value=self._settings.get("appearance_mode", "System"))
         ctk.CTkOptionMenu(
-            self, values=["System", "Light", "Dark"],
+            scroll, values=["System", "Light", "Dark"],
             variable=self._mode_var,
             font=FONT_NORMAL,
-        ).pack(fill="x", padx=20, pady=(0, 2))
+        ).pack(fill="x", padx=16, pady=(0, 2))
 
-        ctk.CTkLabel(self, text="配色主题",
-                     font=FONT_NORMAL).pack(anchor="w", padx=20, pady=(6, 2))
+        ctk.CTkLabel(scroll, text="配色主题",
+                     font=FONT_NORMAL).pack(anchor="w", padx=16, pady=(6, 2))
         self._theme_var = ctk.StringVar(value=self._settings.get("color_theme", "blue"))
         ctk.CTkOptionMenu(
-            self, values=["blue", "dark-blue", "green"],
+            scroll, values=["blue", "dark-blue", "green"],
             variable=self._theme_var,
             font=FONT_NORMAL,
-        ).pack(fill="x", padx=20, pady=(0, 4))
+        ).pack(fill="x", padx=16, pady=(0, 2))
 
         # ── 性能 ──
-        self._add_section("性能")
-        ctk.CTkLabel(self, text="最大并发游戏数 (1-10)",
-                     font=FONT_NORMAL).pack(anchor="w", padx=20, pady=(4, 2))
+        self._add_section(scroll, "性能")
+        ctk.CTkLabel(scroll, text="最大并发游戏数 (1-10)",
+                     font=FONT_NORMAL).pack(anchor="w", padx=16, pady=(4, 2))
         self._workers_var = ctk.StringVar(value=str(self._settings.get("max_game_workers", 3)))
         ctk.CTkEntry(
-            self, textvariable=self._workers_var,
+            scroll, textvariable=self._workers_var,
             font=FONT_NORMAL,
-        ).pack(fill="x", padx=20, pady=(0, 2))
+        ).pack(fill="x", padx=16, pady=(0, 2))
 
-        ctk.CTkLabel(self, text="HTTP 请求超时（秒, 5-30）",
-                     font=FONT_NORMAL).pack(anchor="w", padx=20, pady=(6, 2))
+        ctk.CTkLabel(scroll, text="HTTP 请求超时（秒, 5-30）",
+                     font=FONT_NORMAL).pack(anchor="w", padx=16, pady=(6, 2))
         self._timeout_var = ctk.StringVar(value=str(self._settings.get("request_timeout", 10)))
         ctk.CTkEntry(
-            self, textvariable=self._timeout_var,
+            scroll, textvariable=self._timeout_var,
             font=FONT_NORMAL,
-        ).pack(fill="x", padx=20, pady=(0, 4))
+        ).pack(fill="x", padx=16, pady=(0, 2))
 
         # ── 网络 ──
-        self._add_section("网络 — HTTP 代理（访问海外站点）")
-        ctk.CTkLabel(self, text="HTTP 代理地址",
-                     font=FONT_SMALL).pack(anchor="w", padx=20, pady=(4, 0))
+        self._add_section(scroll, "网络 — HTTP 代理（访问海外站点）")
+        ctk.CTkLabel(scroll, text="HTTP 代理地址",
+                     font=FONT_SMALL).pack(anchor="w", padx=16, pady=(4, 0))
         self._http_proxy_var = ctk.StringVar(value=self._settings.get("http_proxy", ""))
         ctk.CTkEntry(
-            self, textvariable=self._http_proxy_var,
+            scroll, textvariable=self._http_proxy_var,
             font=FONT_SMALL,
-            placeholder_text="例: http://127.0.0.1:7890",
-        ).pack(fill="x", padx=20, pady=(0, 4))
+            placeholder_text="例: http://127.0.0.1:7897",
+        ).pack(fill="x", padx=16, pady=(0, 4))
 
-        ctk.CTkLabel(self, text="HTTPS 代理地址",
-                     font=FONT_SMALL).pack(anchor="w", padx=20, pady=(4, 0))
+        ctk.CTkLabel(scroll, text="HTTPS 代理地址",
+                     font=FONT_SMALL).pack(anchor="w", padx=16, pady=(4, 0))
         self._https_proxy_var = ctk.StringVar(value=self._settings.get("https_proxy", ""))
         ctk.CTkEntry(
-            self, textvariable=self._https_proxy_var,
+            scroll, textvariable=self._https_proxy_var,
             font=FONT_SMALL,
-            placeholder_text="例: http://127.0.0.1:7890",
-        ).pack(fill="x", padx=20, pady=(0, 8))
+            placeholder_text="例: http://127.0.0.1:7897",
+        ).pack(fill="x", padx=16, pady=(0, 4))
 
-        # ── 按钮 ──
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=(16, 12))
-        ctk.CTkButton(btn_row, text="保存", command=self._save,
-                      font=FONT_BOLD).pack(side="right", padx=4)
+        # ── 下载 ──
+        self._add_section(scroll, "下载 — APK 下载管理")
+        ctk.CTkLabel(scroll, text="下载管理器",
+                     font=FONT_NORMAL).pack(anchor="w", padx=16, pady=(4, 2))
+        self._dm_var = ctk.StringVar(value=self._settings.get("download_manager", "auto"))
+        ctk.CTkOptionMenu(
+            scroll, values=["auto", "aria2", "fdm", "idm", "motrix"],
+            variable=self._dm_var,
+            font=FONT_NORMAL,
+        ).pack(fill="x", padx=16, pady=(0, 2))
+
+        ctk.CTkLabel(scroll, text="下载目录（留空 = ./downloads）",
+                     font=FONT_SMALL).pack(anchor="w", padx=16, pady=(6, 0))
+        self._download_dir_var = ctk.StringVar(value=self._settings.get("download_dir", ""))
+        ctk.CTkEntry(
+            scroll, textvariable=self._download_dir_var,
+            font=FONT_SMALL,
+            placeholder_text="例: D:\\APKs",
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        # ── 底部留白 (让滚动区末尾不贴边) ──
+        ctk.CTkLabel(scroll, text="").pack(pady=4)
+
+        # ═══ 底部按钮栏（固定，不滚动） ═══
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 12))
+        btn_frame.grid_columnconfigure(0, weight=1)
+
         ctk.CTkButton(
-            btn_row, text="取消", command=self.destroy,
+            btn_frame, text="取消", command=self.destroy,
             font=FONT_NORMAL,
             fg_color=("#E2E8F0", "#334155"),
             hover_color=("#CBD5E1", "#475569"),
             text_color=TEXT_PRIMARY,
-        ).pack(side="right", padx=4)
+        ).pack(side="right", padx=(4, 0))
 
-    def _add_section(self, title: str) -> None:
+        ctk.CTkButton(
+            btn_frame, text="💾 保存设置", command=self._save,
+            font=FONT_BOLD, height=36,
+        ).pack(side="right")
+
+    def _add_section(self, parent, title: str) -> None:
         """添加小节分隔线 + 标题."""
-        ctk.CTkFrame(self, height=1, fg_color=BORDER_COLOR).pack(
-            fill="x", padx=20, pady=(10, 2))
-        ctk.CTkLabel(self, text=title, font=FONT_SMALL,
-                     text_color=TEXT_SECONDARY).pack(
-            anchor="w", padx=20)
+        ctk.CTkFrame(parent, height=1, fg_color=BORDER_COLOR).pack(
+            fill="x", padx=16, pady=(10, 2))
+        ctk.CTkLabel(parent, text=title, font=FONT_SMALL,
+                     text_color=TEXT_SECONDARY).pack(anchor="w", padx=16)
 
     def _save(self) -> None:
         try:
@@ -153,8 +199,11 @@ class SettingsDialog(ctk.CTkToplevel):
             "request_timeout": t,
             "http_proxy": self._http_proxy_var.get().strip(),
             "https_proxy": self._https_proxy_var.get().strip(),
+            "download_manager": self._dm_var.get(),
+            "download_dir": self._download_dir_var.get().strip(),
         }
         self._on_save(new_settings)
+        messagebox.showinfo("设置", "设置已保存 ✓", parent=self)
         self.destroy()
 
 
@@ -206,10 +255,10 @@ class SingleCheckDialog(ctk.CTkToplevel):
         )
         self._result_text.pack(fill="both", expand=True, padx=20, pady=(8, 16))
         # 彩色标签
-        self._result_text.tag_config("heading", font=FONT_BOLD,
-            foreground=("#3B82F6", "#60A5FA"))
-        self._result_text.tag_config("ok", foreground=("#22C55E", "#4ADE80"))
-        self._result_text.tag_config("err", foreground=("#EF4444", "#F87171"))
+        self._result_text.tag_config("heading",
+            foreground=_resolve(("#3B82F6", "#60A5FA")))
+        self._result_text.tag_config("ok", foreground=_resolve(("#22C55E", "#4ADE80")))
+        self._result_text.tag_config("err", foreground=_resolve(("#EF4444", "#F87171")))
         self._result_text.insert("1.0", "结果将显示在这里…")
         self._result_text.configure(state="disabled")
 
@@ -300,7 +349,7 @@ class AboutDialog(ctk.CTkToplevel):
             font=FONT_HEADING,
         ).pack()
         ctk.CTkLabel(
-            self, text="v5.0.0",
+            self, text="v5.2.0",
             font=FONT_SMALL,
             text_color=TEXT_SECONDARY,
         ).pack(pady=(0, 12))
@@ -311,9 +360,10 @@ class AboutDialog(ctk.CTkToplevel):
 
         # 描述
         about_text = (
-            "自动查询 Google Play + APK 站点\n"
+            "自动查询 Google Play + 5 个 APK 站点\n"
             "比对游戏版本变化\n"
-            "支持版本名 + 版本号双重对比"
+            "支持版本名 + 版本号双重对比\n"
+            "检测到更新自动下载 64 位 APK"
         )
         ctk.CTkLabel(
             self, text=about_text,

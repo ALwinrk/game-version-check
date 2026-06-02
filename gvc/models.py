@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -14,10 +13,12 @@ class SourceResult:
     version_code: str | None = None
     updated_ts: int | None = None
     error: str | None = None
+    detail_url: str | None = None       # 指向详情/下载页的 URL（用于后续下载）
+    download_urls: list[str] = field(default_factory=list)  # APK 直链列表
 
     @property
     def ok(self) -> bool:
-        return self.version is not None and self.error is None
+        return bool(self.version) and self.error is None
 
 
 @dataclass
@@ -76,3 +77,26 @@ class GameResult:
             if s.version_code:
                 return s.version_code
         return None
+
+    @staticmethod
+    def from_source_results(
+        package: str,
+        source_results: dict[str, SourceResult],
+        *,
+        name: str = "",
+        current_version: str = "",
+        current_version_code: str = "",
+    ) -> GameResult:
+        """从 query_all_sources() 返回的字典构造 GameResult."""
+        return GameResult(
+            package=package,
+            name=name,
+            current_backend_version=current_version,
+            current_backend_version_code=current_version_code,
+            google=source_results.get("Google Play", SourceResult()),
+            apkpure=source_results.get("APKPure", SourceResult()),
+            apkcombo=source_results.get("APKCombo", SourceResult()),
+            apkvision=source_results.get("APKVision", SourceResult()),
+            apkmirror=source_results.get("APKMirror", SourceResult()),
+            apkdl=source_results.get("APKDL", SourceResult()),
+        )

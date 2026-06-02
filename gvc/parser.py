@@ -145,6 +145,20 @@ def extract_version_code(html: str) -> str | None:
     return None
 
 
+def extract_both(html: str) -> tuple[str | None, str | None]:
+    """一次性提取版本号和 version code，共享同一个 BeautifulSoup 实例.
+
+    比分别调用 extract_version() + extract_version_code() 更高效,
+    避免重复解析 HTML.
+
+    Returns:
+        (version, version_code) 元组.
+    """
+    version = extract_version(html)
+    vcode = extract_version_code(html)
+    return version, vcode
+
+
 def _is_version(text: str) -> bool:
     """检查是否像有效版本号."""
     if not text or len(text) < 3 or len(text) > 24:

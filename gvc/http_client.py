@@ -1,23 +1,20 @@
-"""HTTP 客户端 — 会话管理、重试、UA 轮换、Cloudflare 检测."""
+"""HTTP 客户端 — 基于 Scrapling 的双层后端: FetcherSession (快) + StealthySession (CF 绕过)."""
 
 from __future__ import annotations
 
-import random
-import time
+import threading
+from urllib.parse import urlparse
 
-import requests
-
-from gvc.config import CF_TIMEOUT, MAX_RETRIES, REQUEST_TIMEOUT, RETRY_BACKOFF, get_proxies
+from gvc.config import REQUEST_TIMEOUT, MAX_RETRIES, RETRY_BACKOFF, STEALTH_TIMEOUT, get_proxies
 from gvc.logging_setup import get_logger
 
-try:
-    from curl_cffi import requests as cf_requests
-except ImportError:
-    cf_requests = None
+# Scrapling fetchers (依赖 scrapling[fetchers])
+from scrapling import Fetcher
+from scrapling.fetchers import StealthySession  # noqa: F401 (used in stealth_get)
 
 logger = get_logger()
 
-# ── Cloudflare 检测 ──────────────────────────────────────
+# ── Cloudflare 检测 (兜底) ────────────────────────────────
 
 _CF_SIGNATURES: list[str] = [
     "cf-browser-verify",
@@ -35,8 +32,8 @@ _CF_SIGNATURES: list[str] = [
 def is_cloudflare_block(html: str) -> bool:
     """检测是否为 Cloudflare JS 挑战页面.
 
-    Cloudflare 的 JS 挑战即使是 curl_cffi 模拟 Chrome 也无法绕过，
-    检测到后应直接判定为不可达，避免浪费重试时间。
+    StealthySession.solve_cloudflare=True 通常会自动处理,
+    但某些边缘情况可能失败, 此函数作为兜底检测.
 
     Args:
         html: HTTP 响应正文.
@@ -49,118 +46,122 @@ def is_cloudflare_block(html: str) -> bool:
     html_lower = html.lower()
     return any(sig.lower() in html_lower for sig in _CF_SIGNATURES)
 
-_USER_AGENTS: list[str] = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-]
 
-_regular_session: requests.Session | None = None
+# ── 快速后端: Fetcher (curl_cffi + browserforge) ─────────
+
+_fetcher: Fetcher | None = None
+_fetcher_lock = threading.Lock()
 
 
-def _init_session() -> requests.Session:
-    global _regular_session
-    if _regular_session is None:
-        _regular_session = requests.Session()
-        _regular_session.headers.update({
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        })
-    _regular_session.headers["User-Agent"] = random.choice(_USER_AGENTS)
-    return _regular_session
+def get_fetcher() -> Fetcher:
+    """获取或创建持久化 Fetcher 实例.
 
-
-def _classify_http_error(status: int) -> str:
-    if status in (404, 410):
-        return "retryable"
-    if 400 <= status < 500:
-        return "fatal"
-    if status >= 500:
-        return "retryable"
-    return "fatal"
-
-
-def _can_connect(host: str, port: int = 443, timeout: float = 2.0) -> bool:
-    """快速检测 TCP 是否可达."""
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(timeout)
-        s.connect((host, port))
-        s.close()
-        return True
-    except Exception:
-        return False
+    Fetcher 基于 curl_cffi, 自动使用 browserforge 生成
+    真实浏览器头部. 线程安全 (curl_cffi 底层).
+    """
+    global _fetcher
+    if _fetcher is None:
+        with _fetcher_lock:
+            if _fetcher is None:
+                _fetcher = Fetcher()
+    return _fetcher
 
 
 def http_get(url: str) -> tuple[int, str]:
-    """GET 请求，带重试和 curl_cffi 降级.
+    """快速 HTTP GET — 通过 Scrapling Fetcher (curl_cffi + browserforge).
 
-    优化：TCP 不通时跳过 requests 直接走 curl_cffi，减少等待时间。
+    替代原有的 requests → curl_cffi 双阶段架构.
+    内置 browserforge 头部生成 + 自动重试 + 代理支持.
+
+    Args:
+        url: 目标 URL.
+
+    Returns:
+        (status_code, html) 元组. status_code 为 0 表示连接失败.
     """
-    from urllib.parse import urlparse
-    host = urlparse(url).hostname or ""
-    last_error = ""
     proxies = get_proxies()
+    try:
+        fetcher = get_fetcher()
+        resp = fetcher.get(
+            url,
+            timeout=int(REQUEST_TIMEOUT),
+            retries=MAX_RETRIES,
+            retry_delay=RETRY_BACKOFF,
+            impersonate="chrome124",
+            stealthy_headers=True,
+            proxies=proxies if proxies else None,
+        )
+        if resp.status == 200 and len(resp.html_content) > 500:
+            return resp.status, resp.html_content
+        # 非 200 或响应体太短
+        if resp.status == 403 and is_cloudflare_block(resp.html_content):
+            return 0, f"Cloudflare blocked: {urlparse(url).hostname}"
+        return resp.status, resp.html_content or ""
+    except Exception as e:
+        logger.exception("Fetcher failed for %s: %s", url[:60], e)
+        return 0, f"{type(e).__name__}: {e!s}"[:80]
 
-    # ── 阶段 1：requests + 重试 ──
-    # TCP 预检：无代理时如果 TCP 不通，直接跳过 requests
-    skip_requests = not proxies and host and not _can_connect(host)
-    if skip_requests:
-        last_error = f"TCP blocked: {host}"
-    else:
-        for attempt in range(1, MAX_RETRIES + 1):
+
+# ── 隐身后端: StealthySession (Chromium + CF 绕过) ──────────
+
+_stealthy_lock = threading.Lock()
+
+
+def stealth_get(url: str, *, use_proxy: bool = False) -> tuple[int, str]:
+    """浏览器 GET — 用于 Cloudflare 保护的站点.
+
+    通过 Chromium 无头浏览器访问, 自动解决 CF JS Challenge.
+    比 http_get 慢得多 (~5-10s/页, 含浏览器启动).
+
+    Args:
+        url: 目标 URL.
+        use_proxy: 是否配置代理。APKMirror 需要 (GFW TCP 封锁);
+                   APKVision/APKDL 在国内 TCP 可达, 不需要代理。
+
+    Returns:
+        (status_code, html) 元组.
+    """
+    with _stealthy_lock:
+        try:
+            proxy_config = None
+            if use_proxy:
+                proxies = get_proxies()
+                if proxies:
+                    proxy_url = proxies.get("https") or proxies.get("http")
+                    if proxy_url:
+                        proxy_config = {"server": proxy_url}
+
+            from gvc import get_chromium_executable
+            chrome_exe = get_chromium_executable()
+
+            with StealthySession(
+                headless=True,
+                solve_cloudflare=True,
+                block_ads=True,
+                disable_resources=True,
+                timeout=int(STEALTH_TIMEOUT * 1000),
+                google_search=False,
+                proxy=proxy_config,
+                executable_path=chrome_exe,
+            ) as s:
+                resp = s.fetch(url)
+                if resp.status == 200 and len(resp.html_content) > 500:
+                    if is_cloudflare_block(resp.html_content):
+                        return 0, f"Cloudflare bypass failed: {urlparse(url).hostname}"
+                    return resp.status, resp.html_content
+                return resp.status, resp.html_content or ""
+        except Exception as e:
+            logger.exception("StealthySession failed for %s: %s", url[:60], e)
+            return 0, f"{type(e).__name__}: {e!s}"[:80]
+
+
+def reset_sessions() -> None:
+    """重置所有持久化会话 (用于长时间运行后的内存清理)."""
+    global _fetcher
+    with _fetcher_lock:
+        if _fetcher:
             try:
-                session = _init_session()
-                resp = session.get(url, timeout=REQUEST_TIMEOUT, proxies=proxies)
-                if resp.status_code == 200 and len(resp.text) > 500:
-                    return resp.status_code, resp.text
-                if resp.status_code == 403:
-                    last_error = f"HTTP 403 (attempt {attempt})"
-                    # 不在此处判定 CF，留给 curl_cffi 阶段尝试（模拟 Chrome 可能绕过）
-                    break
-                classification = _classify_http_error(resp.status_code)
-                if classification == "fatal":
-                    return resp.status_code, resp.text
-                last_error = f"HTTP {resp.status_code} (attempt {attempt})"
-            except requests.ConnectionError:
-                last_error = f"ConnectionError: {url[:60]}"
-            except requests.Timeout:
-                last_error = f"Timeout: {url[:60]}"
-            except requests.RequestException as e:
-                last_error = f"RequestException: {e!s}"[:80]
-
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF ** attempt)
-
-    # ── 阶段 2：curl_cffi 降级 ──
-    if cf_requests is not None:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                cf_proxies = proxies if proxies else {}
-                resp = cf_requests.get(url, impersonate="chrome124", timeout=CF_TIMEOUT, proxies=cf_proxies)
-                if resp.status_code == 200 and len(resp.text) > 500:
-                    logger.debug("curl_cffi success on %s", url[:60])
-                    return resp.status_code, resp.text
-                # Cloudflare JS 挑战 — 即使 curl_cffi 模拟 Chrome 也无法绕过
-                if resp.status_code == 403 and is_cloudflare_block(resp.text):
-                    return 0, f"Cloudflare blocked: {host}"
-                classification = _classify_http_error(resp.status_code)
-                if classification == "fatal":
-                    return resp.status_code, resp.text
-                last_error = f"cf HTTP {resp.status_code}"
-            except Exception as e:
-                last_error = f"cf error: {e!s}"[:80]
-
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF ** attempt)
-    else:
-        last_error = "curl_cffi not installed"
-
-    logger.warning("All attempts failed for %s: %s", url[:60], last_error)
-    return 0, last_error
-
-
-# 向后兼容别名
-_http_get = http_get
+                _fetcher.close()
+            except Exception:
+                pass
+            _fetcher = None

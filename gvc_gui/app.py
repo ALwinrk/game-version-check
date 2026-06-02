@@ -19,8 +19,9 @@ from gvc_gui.config import (
     APPEARANCE_MODE, COLOR_THEME, POLL_INTERVAL,
     FONT_NORMAL, FONT_SMALL, FONT_BOLD, FONT_CAPTION,
     BG_PRIMARY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_DISABLED,
-    STATUS_BAR_BG,
+    STATUS_BAR_BG, SURFACE_BG, ACCENT_SUCCESS,
 )
+from gvc_gui.main_view import _resolve
 from gvc_gui.dialogs import (
     SettingsDialog, SingleCheckDialog, AboutDialog,
     load_settings, save_settings,
@@ -126,36 +127,62 @@ class MainApplication(ctk.CTk):
     # ══════════════════════════════════════════════════════════
 
     def _build_layout(self) -> None:
-        # ROW 0 — 统计仪表盘
-        self._stats = StatsDashboard(self)
-        self._stats.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        # 主窗口用 grid: row 0=滚动区, row 1=状态栏
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
-        # ROW 1 — 文件选择
-        self._file_picker = FilePickerFrame(self)
-        self._file_picker.grid(row=1, column=0, sticky="ew", padx=8, pady=(6, 0))
+        # ═══ 可滚动内容区（含全部组件） ═══
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        # ROW 0 — 统计仪表盘
+        self._stats = StatsDashboard(scroll)
+        self._stats.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 0))
+
+        # ROW 1 — 双面板：表格排查 + 单独排查
+        row1 = ctk.CTkFrame(scroll, fg_color="transparent")
+        row1.grid(row=1, column=0, sticky="ew", padx=4, pady=(6, 0))
+        row1.grid_columnconfigure(0, weight=3)
+        row1.grid_columnconfigure(1, weight=2)
+
+        # 左侧：表格排查
+        left_panel = ctk.CTkFrame(row1, fg_color="transparent")
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        left_panel.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(left_panel, text="📂 批量表格排查",
+                     font=FONT_BOLD, text_color=TEXT_PRIMARY).pack(anchor="w")
+        self._file_picker = FilePickerFrame(left_panel)
+        self._file_picker.pack(fill="x", pady=(4, 0))
         self._file_picker.set_callbacks(
             on_start=self._start_check,
             on_stop=self._stop_check,
         )
 
+        # 右侧：单独排查
+        right_panel = ctk.CTkFrame(row1, fg_color=SURFACE_BG, corner_radius=8)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        self._build_single_check_panel(right_panel)
+
         # ROW 2 — 进度 + 日志
-        self._progress_view = ProgressView(self, height=130)
-        self._progress_view.grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 0))
+        self._progress_view = ProgressView(scroll, height=130)
+        self._progress_view.grid(row=2, column=0, sticky="ew", padx=4, pady=(4, 0))
 
         # ROW 3 — 游戏表格
-        self._table = GameTableFrame(self)
-        self._table.grid(row=3, column=0, sticky="nsew", padx=8, pady=(4, 4))
+        self._table = GameTableFrame(scroll)
+        self._table.grid(row=3, column=0, sticky="nsew", padx=4, pady=(4, 4))
         self._table.set_callbacks(
             on_recheck=self._on_recheck_selected,
             on_copy=lambda: None,
         )
 
-        # ROW 4 — 状态栏
+        # ═══ 状态栏（固定底部，不滚动） ═══
         status_frame = ctk.CTkFrame(
             self, height=32, corner_radius=0,
             fg_color=STATUS_BAR_BG,
         )
-        status_frame.grid(row=4, column=0, sticky="ew")
+        status_frame.grid(row=1, column=0, sticky="ew")
         status_frame.grid_propagate(False)
 
         # 左侧：状态圆点 + 文字
@@ -169,8 +196,13 @@ class MainApplication(ctk.CTk):
         )
         self._status_dot.pack(side="left")
 
+        # 检测代理配置
+        proxy_configured = bool(self._settings.get("http_proxy") or self._settings.get("https_proxy"))
+        ready_text = " 就绪 | 选择表格或输入包名开始排查"
+        if not proxy_configured:
+            ready_text += " | ⚠ 未配置代理 (海外站点可能无法连接，请打开 设置→选项)"
         self._status_label = ctk.CTkLabel(
-            left, text=" 就绪 | 请选择 Excel 表格文件开始排查",
+            left, text=ready_text,
             font=FONT_SMALL, anchor="w",
             text_color=TEXT_SECONDARY,
         )
@@ -186,6 +218,74 @@ class MainApplication(ctk.CTk):
 
         ctk.AppearanceModeTracker.add(self._on_appearance_changed, self)
         self._update_mode_indicator()
+
+    def _build_single_check_panel(self, parent: ctk.CTkFrame) -> None:
+        """构建右侧「单独排查」面板."""
+        # 标题
+        ctk.CTkLabel(parent, text="🔍 单独排查",
+                     font=FONT_BOLD, text_color=TEXT_PRIMARY).pack(anchor="w", padx=12, pady=(10, 4))
+
+        # 包名
+        ctk.CTkLabel(parent, text="游戏包名",
+                     font=FONT_SMALL, text_color=TEXT_SECONDARY).pack(anchor="w", padx=12)
+        self._sc_pkg_var = ctk.StringVar()
+        ctk.CTkEntry(parent, textvariable=self._sc_pkg_var,
+                     font=FONT_NORMAL, height=32,
+                     placeholder_text="例: com.tencent.ig").pack(fill="x", padx=12, pady=(0, 4))
+
+        # 当前版本名（可选）
+        ctk.CTkLabel(parent, text="后台版本名（可选）",
+                     font=FONT_SMALL, text_color=TEXT_SECONDARY).pack(anchor="w", padx=12)
+        self._sc_ver_var = ctk.StringVar()
+        ctk.CTkEntry(parent, textvariable=self._sc_ver_var,
+                     font=FONT_NORMAL, height=32,
+                     placeholder_text="例: 4.4.0").pack(fill="x", padx=12, pady=(0, 4))
+
+        # 当前版本号（可选）
+        ctk.CTkLabel(parent, text="后台版本号（可选）",
+                     font=FONT_SMALL, text_color=TEXT_SECONDARY).pack(anchor="w", padx=12)
+        self._sc_vc_var = ctk.StringVar()
+        ctk.CTkEntry(parent, textvariable=self._sc_vc_var,
+                     font=FONT_NORMAL, height=32,
+                     placeholder_text="例: 12345678").pack(fill="x", padx=12, pady=(0, 4))
+
+        # 下载勾选框
+        dl_row = ctk.CTkFrame(parent, fg_color="transparent")
+        dl_row.pack(fill="x", padx=12, pady=(2, 2))
+        self._sc_download_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(dl_row, text="下载 64 位 APK", variable=self._sc_download_var,
+                        font=FONT_SMALL).pack(side="left")
+
+        # 按钮行
+        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_row.pack(fill="x", padx=12, pady=(4, 0))
+        self._sc_check_btn = ctk.CTkButton(
+            btn_row, text="排查", command=self._on_single_check_inline,
+            font=FONT_NORMAL, height=32,
+        )
+        self._sc_check_btn.pack(side="left", fill="x", expand=True)
+        self._sc_dl_btn = ctk.CTkButton(
+            btn_row, text="下载", command=self._on_single_download,
+            font=FONT_NORMAL, height=32,
+            fg_color=ACCENT_SUCCESS, hover_color=("#16A34A", "#22C55E"),
+            state="disabled",
+        )
+        self._sc_dl_btn.pack(side="left", padx=(4, 0))
+
+        # 结果展示
+        self._sc_result = ctk.CTkTextbox(parent, font=FONT_SMALL, height=100)
+        self._sc_result.pack(fill="both", expand=True, padx=12, pady=(6, 10))
+        self._sc_result.tag_config("heading", foreground=_resolve(("#3B82F6", "#60A5FA")))
+        self._sc_result.tag_config("ok", foreground=_resolve(("#22C55E", "#4ADE80")))
+        self._sc_result.tag_config("err", foreground=_resolve(("#EF4444", "#F87171")))
+        self._sc_result.tag_config("warn", foreground=_resolve(("#F59E0B", "#FBBF24")))
+        self._sc_result.insert("1.0", "输入包名点「排查」开始…")
+        self._sc_result.configure(state="disabled")
+
+        # 状态：保存上次查询结果用于下载
+        self._sc_last_results: dict = {}
+        self._sc_last_best_version: str = ""
+        self._sc_last_package: str = ""
 
     # ══════════════════════════════════════════════════════════
     # 消息轮询
@@ -204,16 +304,16 @@ class MainApplication(ctk.CTk):
         if msg.type == "result" and msg.game_result:
             r = msg.game_result
             self._results[r.package] = r
-            self._table.update_row(msg.index - 1, r)
+            self._table.update_row(msg.index, r)  # worker 现在发原始行索引(0-based)
             self._progress_view.log_result(
                 r.package, r.name,
                 r.update_detail or "",
                 r.update_detail or "",
                 r.has_update,
             )
-            self._progress_view.update_progress(msg.index, msg.total, r.package)
+            self._progress_view.update_progress(msg.index + 1, msg.total, r.package)
             self._status_label.configure(
-                text=f" [{msg.index}/{msg.total}] {r.name or r.package}"
+                text=f" [{msg.index + 1}/{msg.total}] {r.name or r.package}"
             )
             # 实时更新统计
             s = self._table.get_stats()
@@ -227,7 +327,7 @@ class MainApplication(ctk.CTk):
             self._progress_view.log_error(msg.package, msg.error_text)
             self._set_status_dot("error")
             self._status_label.configure(
-                text=f" [{msg.index}/{msg.total}] {msg.package} — 查询失败"
+                text=f" [{msg.index + 1}/{msg.total}] {msg.package} — 查询失败"
             )
         elif msg.type == "done":
             self._on_done()
@@ -377,11 +477,152 @@ class MainApplication(ctk.CTk):
     def _on_single_check(self) -> None:
         SingleCheckDialog(self)
 
+    def _on_single_check_inline(self) -> None:
+        """主界面右侧面板「单独排查」按钮."""
+        pkg = self._sc_pkg_var.get().strip()
+        if not pkg:
+            messagebox.showwarning("提示", "请输入游戏包名")
+            return
+
+        self._sc_check_btn.configure(text="查询中…", state="disabled")
+        self._sc_dl_btn.configure(state="disabled")
+        self._sc_result.configure(state="normal")
+        self._sc_result.delete("1.0", "end")
+        self._sc_result.insert("1.0", "正在查询…")
+        self._sc_result.configure(state="disabled")
+        self._set_status_dot("active")
+        self._status_label.configure(text=f" 单独排查: {pkg} …")
+
+        import threading
+
+        def _run() -> None:
+            from gvc.models import GameResult, SourceResult
+            from gvc.sources import query_all_sources
+            from gvc.version import best_version, best_version_code, check_for_update
+
+            # 勾选下载时强制查全部 6 个源（需要 detail_url 做下载链接）
+            force_all = self._sc_download_var.get()
+            results = query_all_sources(pkg, force_all=force_all)
+            r = GameResult.from_source_results(pkg, results)
+            bv = best_version(r)
+            bvc = best_version_code(r)
+
+            # 保存供后续下载
+            self._sc_last_results = results
+            self._sc_last_best_version = bv
+            self._sc_last_package = pkg
+
+            # 构建结果文本
+            lines = [f"包名: {pkg}"]
+            if bv != "无法获取":
+                lines.append(f"最佳版本: {bv}" + (f" (vc:{bvc})" if bvc else ""))
+            else:
+                lines.append("最佳版本: 无法获取")
+            lines.append("")
+
+            cur_v = self._sc_ver_var.get().strip()
+            cur_vc = self._sc_vc_var.get().strip()
+            has_update = False
+            if cur_v or cur_vc:
+                has_update, detail = check_for_update(bv, bvc, cur_v, cur_vc)
+                if has_update:
+                    lines.append(f">>> {detail}")
+                else:
+                    lines.append("状态: ✓ 无变化")
+                lines.append("")
+
+            for name, s in results.items():
+                if s.version:
+                    line = f"  {name}: {s.version}"
+                    if s.version_code:
+                        line += f" (vc:{s.version_code})"
+                elif s.error:
+                    line = f"  {name}: ✗ {s.error[:40]}"
+                else:
+                    line = f"  {name}: (无数据)"
+                lines.append(line)
+
+            self.after(0, lambda: self._show_inline_result("\n".join(lines), has_update))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_inline_result(self, text: str, has_update: bool) -> None:
+        """显示内嵌面板的排查结果."""
+        self._sc_result.configure(state="normal")
+        self._sc_result.delete("1.0", "end")
+        for i, line in enumerate(text.split("\n")):
+            if i < 2:
+                self._sc_result.insert("end", line + "\n", "heading")
+            elif line.startswith(">>>"):
+                self._sc_result.insert("end", line + "\n", "warn")
+            elif "✗" in line:
+                self._sc_result.insert("end", line + "\n", "err")
+            elif line.startswith("  ") and ":" in line:
+                self._sc_result.insert("end", line + "\n", "ok")
+            else:
+                self._sc_result.insert("end", line + "\n")
+        self._sc_result.configure(state="disabled")
+        self._sc_check_btn.configure(text="排查", state="normal")
+
+        # 启用下载按钮
+        if has_update and self._sc_download_var.get():
+            self._sc_dl_btn.configure(state="normal")
+        elif self._sc_download_var.get() and self._sc_last_best_version not in ("", "无法获取"):
+            self._sc_dl_btn.configure(state="normal")
+        self._set_status_dot("success")
+        self._status_label.configure(text=f" 单独排查完成: {self._sc_last_package}")
+
+    def _on_single_download(self) -> None:
+        """主界面右侧面板「下载」按钮 — 调起下载管理器."""
+        if not self._sc_last_results or not self._sc_last_package:
+            messagebox.showwarning("提示", "请先执行排查")
+            return
+
+        dm_name = self._settings.get("download_manager", "auto")
+        dl_dir = self._settings.get("download_dir", "") or None
+
+        self._sc_dl_btn.configure(text="下载中…", state="disabled")
+        self._status_label.configure(text=f" 提取下载链接: {self._sc_last_package} …")
+
+        import threading
+
+        def _run() -> None:
+            from gvc.downloader import auto_download
+            result = auto_download(
+                package=self._sc_last_package,
+                source_results=self._sc_last_results,
+                best_version=self._sc_last_best_version,
+                download_dir=dl_dir,
+                dm_name=dm_name,
+            )
+            self.after(0, lambda: self._show_download_result(result))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_download_result(self, result: dict) -> None:
+        """显示下载结果."""
+        self._sc_dl_btn.configure(text="下载", state="normal")
+        if result.get("success"):
+            mgr = result.get("manager", "")
+            if mgr:
+                msg = f"已调起 {mgr}\n{result.get('arch', '')} | {result.get('source', '')}"
+                self._status_label.configure(text=f" 下载已发送: {self._sc_last_package}")
+            else:
+                msg = f"内置下载完成\n{result.get('file_path', '')}"
+                self._status_label.configure(text=f" 下载完成: {self._sc_last_package}")
+            messagebox.showinfo("下载", msg)
+        elif result.get("only_32bit_urls"):
+            urls = "\n".join(result["only_32bit_urls"][:3])
+            messagebox.showinfo("仅 32 位 APK", f"不自动下载，链接如下:\n{urls}")
+        else:
+            messagebox.showwarning("下载失败", result.get("error", "未知错误"))
+        self._sc_dl_btn.configure(state="normal" if self._sc_last_results else "disabled")
+
     def _on_settings(self) -> None:
         SettingsDialog(self, self._settings, self._apply_settings)
 
     def _apply_runtime_settings(self) -> None:
-        """启动时应用已保存的代理/超时/并发等运行时设置到环境变量."""
+        """启动时应用已保存的代理/超时/并发/下载等运行时设置到环境变量."""
         for key, env in [("http_proxy", "GVC_HTTP_PROXY"), ("https_proxy", "GVC_HTTPS_PROXY")]:
             val = self._settings.get(key, "")
             std_env = "HTTP_PROXY" if key == "http_proxy" else "HTTPS_PROXY"
@@ -396,6 +637,10 @@ class MainApplication(ctk.CTk):
             os.environ["GVC_REQUEST_TIMEOUT"] = str(self._settings["request_timeout"])
         if self._settings.get("max_game_workers"):
             os.environ["GVC_MAX_GAME_WORKERS"] = str(self._settings["max_game_workers"])
+        if self._settings.get("download_manager"):
+            os.environ["GVC_DOWNLOAD_MANAGER"] = self._settings["download_manager"]
+        if self._settings.get("download_dir"):
+            os.environ["GVC_DOWNLOAD_DIR"] = self._settings["download_dir"]
 
     def _apply_settings(self, new_settings: dict) -> None:
         self._settings.update(new_settings)
@@ -414,6 +659,10 @@ class MainApplication(ctk.CTk):
                 for v in (custom_env, std_env):
                     if v in os.environ:
                         del os.environ[v]
+        if self._settings.get("download_manager"):
+            os.environ["GVC_DOWNLOAD_MANAGER"] = self._settings["download_manager"]
+        if self._settings.get("download_dir"):
+            os.environ["GVC_DOWNLOAD_DIR"] = self._settings["download_dir"]
         self._status_label.configure(
             text=" 设置已保存" + (" | 代理已配置" if new_settings.get("http_proxy") else "")
         )

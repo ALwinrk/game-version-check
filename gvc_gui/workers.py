@@ -5,10 +5,11 @@ from __future__ import annotations
 import queue
 import threading
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from gvc.models import GameResult, SourceResult
 from gvc.sources import query_all_sources
-from gvc.version import best_version, best_version_code, compare_version_codes, normalize
+from gvc.version import best_version, best_version_code, check_for_update, normalize
 from gvc.logging_setup import get_logger
 
 logger = get_logger()
@@ -20,7 +21,7 @@ class WorkerMessage:
 
     type: str  # "progress" | "result" | "error" | "done"
     package: str = ""
-    index: int = 0
+    index: int = 0       # 原始 rows_data 中的位置（0-based）
     total: int = 0
     game_result: GameResult | None = None
     source_results: dict[str, SourceResult] | None = None
@@ -28,10 +29,7 @@ class WorkerMessage:
 
 
 class CheckWorker(threading.Thread):
-    """后台排查线程 — 复用 gvc 核心查询逻辑.
-
-    通过 threading.Thread 而非 QThread，保持与 tkinter 兼容。
-    """
+    """后台排查线程 — 复用 gvc 核心查询逻辑."""
 
     def __init__(
         self,
@@ -51,94 +49,63 @@ class CheckWorker(threading.Thread):
         self._cancel.set()
 
     def run(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         total = len(self._rows)
 
         with ThreadPoolExecutor(max_workers=min(total, self._max_workers)) as executor:
+            # 记录每行数据的原始索引
             future_map = {
-                executor.submit(query_all_sources, d["package"]): d
-                for d in self._rows
+                executor.submit(query_all_sources, d["package"]): (i, d)
+                for i, d in enumerate(self._rows)
             }
             done = 0
             for future in as_completed(future_map):
                 if self._cancel.is_set():
-                    # 取消后不再处理新结果
                     for f in future_map:
                         f.cancel()
                     self._queue.put(WorkerMessage(type="done", total=total))
                     return
 
-                d = future_map[future]
+                row_index, d = future_map[future]
                 done += 1
                 pkg = d["package"]
 
                 try:
                     source_results = future.result()
                 except Exception as e:
-                    logger.error("查询 %s 失败: %s", pkg, e)
+                    logger.exception("查询 %s 失败", pkg)
                     self._queue.put(WorkerMessage(
                         type="error", package=pkg,
-                        index=done, total=total,
+                        index=row_index, total=total,
                         error_text=f"{type(e).__name__}: {e!s}"[:100],
                     ))
                     continue
 
-                # 构造 GameResult
-                r = GameResult(
-                    package=pkg,
+                r = GameResult.from_source_results(
+                    pkg,
+                    source_results,
                     name=d.get("name", ""),
-                    current_backend_version=d.get("current_version", ""),
-                    current_backend_version_code=d.get("current_version_code", ""),
-                    google=source_results.get("Google Play", SourceResult()),
-                    apkpure=source_results.get("APKPure", SourceResult()),
-                    apkcombo=source_results.get("APKCombo", SourceResult()),
-                    apkvision=source_results.get("APKVision", SourceResult()),
-                    apkmirror=source_results.get("APKMirror", SourceResult()),
-                    apkdl=source_results.get("APKDL", SourceResult()),
+                    current_version=d.get("current_version", ""),
+                    current_version_code=d.get("current_version_code", ""),
                 )
 
-                # 判定更新状态
                 best_v = best_version(r)
                 best_vc = best_version_code(r)
-                cur_vn = normalize(r.current_backend_version)
-                cur_vc = (r.current_backend_version_code or "").strip()
+                cur_vn = d.get("current_version", "")
+                cur_vc = (d.get("current_version_code", "") or "").strip()
 
                 if best_v == "无法获取":
                     r.has_update = False
                     r.update_detail = "获取失败"
-                elif best_vc and cur_vc:
-                    cmp = compare_version_codes(cur_vc, best_vc)
-                    if cmp < 0:
-                        r.has_update = True
-                        r.update_detail = f"vc:{cur_vc}→{best_vc}"
-                        if r.current_backend_version and normalize(best_v) != cur_vn:
-                            r.update_detail += f" ({r.current_backend_version}→{best_v})"
-                    elif cmp == 0:
-                        if cur_vn and normalize(best_v) != cur_vn and best_v != "无法获取":
-                            r.has_update = True
-                            r.update_detail = f"{r.current_backend_version}→{best_v} (vc:{best_vc})"
-                        else:
-                            r.has_update = False
-                            r.update_detail = "-"
-                    else:
-                        r.has_update = False
-                        r.update_detail = "-"
-                elif cur_vn and normalize(best_v) != cur_vn and best_v != "无法获取":
-                    r.has_update = True
-                    r.update_detail = f"{r.current_backend_version}→{best_v}"
-                    if best_vc:
-                        r.update_detail += f" (vc:{best_vc})"
-                elif not cur_vn and best_v != "无法获取":
-                    r.has_update = False
-                    r.update_detail = "首次记录"
                 else:
-                    r.has_update = False
-                    r.update_detail = "-"
+                    has_update, detail = check_for_update(
+                        best_v, best_vc, cur_vn, cur_vc,
+                    )
+                    r.has_update = has_update
+                    r.update_detail = detail
 
                 self._queue.put(WorkerMessage(
                     type="result", package=pkg,
-                    index=done, total=total,
+                    index=row_index, total=total,
                     game_result=r, source_results=source_results,
                 ))
 

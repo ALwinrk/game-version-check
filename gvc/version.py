@@ -107,6 +107,44 @@ def compare_version_codes(a: str | int, b: str | int) -> int:
     return 0
 
 
+def check_for_update(
+    best_v: str,
+    best_vc: str | None,
+    current_v: str,
+    current_vc: str,
+) -> tuple[bool, str]:
+    """判定是否有更新（统一的版本对比逻辑，避免重复代码）.
+
+    Returns:
+        (has_update, detail) — has_update 为 True 表示有更新,
+        detail 为描述字符串（如 "vc:100→200" 或 "4.4.0→4.5.0"）.
+    """
+    # 策略 1：版本号对比（优先）
+    if best_vc and current_vc:
+        try:
+            cv, bv = int(current_vc), int(best_vc)
+            if cv < bv:
+                return True, f"vc:{current_vc}→{best_vc}"
+            # 版本号相同但版本名不同
+            if cv == bv and current_v and normalize(best_v) != normalize(current_v):
+                return True, f"{current_v}→{best_v} (vc:{best_vc})"
+            return False, "-"
+        except (ValueError, TypeError):
+            pass
+
+    # 策略 2：版本名对比
+    if current_v and best_v != "无法获取" and normalize(best_v) != normalize(current_v):
+        detail = f"{current_v}→{best_v}"
+        if best_vc:
+            detail += f" (vc:{best_vc})"
+        return True, detail
+
+    # 无变化 / 首次记录
+    if not current_v and best_v != "无法获取":
+        return False, "首次记录"
+    return False, "-"
+
+
 def best_version_code(r: GameResult) -> str:
     """从多个数据源结果中判定最佳 version code.
 

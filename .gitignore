@@ -31,3 +31,8 @@ last_versions.json
 htmlcov/
 .coverage
 coverage.xml
+
+# User-specific
+.claude/settings.local.json
+.claude/skills/
+gvc_gui_settings.json
