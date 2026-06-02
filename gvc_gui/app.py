@@ -81,6 +81,9 @@ class MainApplication(ctk.CTk):
     # ══════════════════════════════════════════════════════════
 
     def _build_menu(self) -> None:
+        # 先清除旧菜单
+        self.configure(menu="")
+
         is_dark = ctk.get_appearance_mode() == "Dark"
         menu_bg = "#1E293B" if is_dark else "#FFFFFF"
         menu_fg = "#F1F5F9" if is_dark else "#0F172A"
@@ -139,16 +142,20 @@ class MainApplication(ctk.CTk):
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))
         scroll.grid_columnconfigure(0, weight=1)
+        # 让表格行 (row 3) 自动扩展填充空白
+        scroll.grid_rowconfigure(3, weight=1)
 
         # ROW 0 — 统计仪表盘
         self._stats = StatsDashboard(scroll)
         self._stats.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 0))
+        scroll.grid_rowconfigure(0, weight=0)
 
         # ROW 1 — 双面板：表格排查 + 单独排查
         row1 = ctk.CTkFrame(scroll, fg_color="transparent")
         row1.grid(row=1, column=0, sticky="ew", padx=4, pady=(6, 0))
         row1.grid_columnconfigure(0, weight=3)
         row1.grid_columnconfigure(1, weight=2)
+        scroll.grid_rowconfigure(1, weight=0)
 
         # 左侧：表格排查
         left_panel = ctk.CTkFrame(row1, fg_color="transparent")
@@ -169,11 +176,13 @@ class MainApplication(ctk.CTk):
         right_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self._build_single_check_panel(right_panel)
 
-        # ROW 2 — 进度 + 日志
-        self._progress_view = ProgressView(scroll, height=130)
+        # ROW 2 — 进度 + 日志（固定高度，不随窗口拉伸）
+        self._progress_view = ProgressView(scroll, height=100)
         self._progress_view.grid(row=2, column=0, sticky="ew", padx=4, pady=(4, 0))
+        self._progress_view.grid_propagate(False)
+        scroll.grid_rowconfigure(2, weight=0)
 
-        # ROW 3 — 游戏表格
+        # ROW 3 — 游戏表格（weight=1, 自动填充剩余空间）
         self._table = GameTableFrame(scroll)
         self._table.grid(row=3, column=0, sticky="nsew", padx=4, pady=(4, 4))
         self._table.set_callbacks(
@@ -235,7 +244,7 @@ class MainApplication(ctk.CTk):
         self._sc_pkg_var = ctk.StringVar()
         ctk.CTkEntry(parent, textvariable=self._sc_pkg_var,
                      font=FONT_NORMAL, height=32,
-                     placeholder_text="例: com.tencent.ig").pack(fill="x", padx=12, pady=(0, 4))
+                     placeholder_text="例: com.tencent.ig （逗号分隔可查多个）").pack(fill="x", padx=12, pady=(0, 4))
 
         # 当前版本名（可选）
         ctk.CTkLabel(parent, text="后台版本名（可选）",
@@ -484,20 +493,25 @@ class MainApplication(ctk.CTk):
         SingleCheckDialog(self)
 
     def _on_single_check_inline(self) -> None:
-        """主界面右侧面板「单独排查」按钮."""
-        pkg = self._sc_pkg_var.get().strip()
-        if not pkg:
-            messagebox.showwarning("提示", "请输入游戏包名")
+        """主界面右侧面板「单独排查」按钮 — 支持逗号分隔多包名."""
+        raw = self._sc_pkg_var.get().strip()
+        if not raw:
+            messagebox.showwarning("提示", "请输入游戏包名（多个用逗号分隔）")
+            return
+
+        pkgs = [p.strip() for p in raw.replace("，", ",").split(",") if p.strip()]
+        if not pkgs:
             return
 
         self._sc_check_btn.configure(text="查询中…", state="disabled")
         self._sc_dl_btn.configure(state="disabled")
         self._sc_result.configure(state="normal")
         self._sc_result.delete("1.0", "end")
-        self._sc_result.insert("1.0", "正在查询…")
+        hint = f"正在查询 {len(pkgs)} 个包名…" if len(pkgs) > 1 else "正在查询…"
+        self._sc_result.insert("1.0", hint)
         self._sc_result.configure(state="disabled")
         self._set_status_dot("active")
-        self._status_label.configure(text=f" 单独排查: {pkg} …")
+        self._status_label.configure(text=f" 单独排查: {pkgs[0]}" + (f" 等 {len(pkgs)} 款" if len(pkgs) > 1 else ""))
 
         import threading
 
@@ -506,49 +520,61 @@ class MainApplication(ctk.CTk):
             from gvc.sources import query_all_sources
             from gvc.version import best_version, best_version_code, check_for_update
 
-            # 勾选下载时强制查全部 6 个源（需要 detail_url 做下载链接）
             force_all = self._sc_download_var.get()
-            results = query_all_sources(pkg, force_all=force_all)
-            r = GameResult.from_source_results(pkg, results)
-            bv = best_version(r)
-            bvc = best_version_code(r)
-
-            # 保存供后续下载
-            self._sc_last_results = results
-            self._sc_last_best_version = bv
-            self._sc_last_package = pkg
-
-            # 构建结果文本
-            lines = [f"包名: {pkg}"]
-            if bv != "无法获取":
-                lines.append(f"最佳版本: {bv}" + (f" (vc:{bvc})" if bvc else ""))
-            else:
-                lines.append("最佳版本: 无法获取")
-            lines.append("")
-
             cur_v = self._sc_ver_var.get().strip()
             cur_vc = self._sc_vc_var.get().strip()
-            has_update = False
-            if cur_v or cur_vc:
-                has_update, detail = check_for_update(bv, bvc, cur_v, cur_vc)
-                if has_update:
-                    lines.append(f">>> {detail}")
-                else:
-                    lines.append("状态: ✓ 无变化")
-                lines.append("")
 
-            for name, s in results.items():
-                if s.version:
-                    line = f"  {name}: {s.version}"
-                    if s.version_code:
-                        line += f" (vc:{s.version_code})"
-                elif s.error:
-                    line = f"  {name}: ✗ {s.error[:40]}"
-                else:
-                    line = f"  {name}: (无数据)"
-                lines.append(line)
+            all_lines: list[str] = []
+            # 存第一个有版本的包用于下载
+            self._sc_last_results = {}
+            self._sc_last_best_version = ""
+            self._sc_last_package = ""
 
-            self.after(0, lambda: self._show_inline_result("\n".join(lines), has_update))
+            for idx, pkg in enumerate(pkgs):
+                if idx > 0:
+                    all_lines.append("")
+                    all_lines.append("─" * 50)
+                    all_lines.append("")
+
+                results = query_all_sources(pkg, force_all=force_all)
+                r = GameResult.from_source_results(pkg, results)
+                bv = best_version(r)
+                bvc = best_version_code(r)
+
+                # 保存第一个有效结果供下载
+                if not self._sc_last_package and bv != "无法获取":
+                    self._sc_last_results = results
+                    self._sc_last_best_version = bv
+                    self._sc_last_package = pkg
+
+                all_lines.append(f"包名: {pkg}")
+                if bv != "无法获取":
+                    all_lines.append(f"最佳版本: {bv}" + (f" (vc:{bvc})" if bvc else ""))
+                else:
+                    all_lines.append("最佳版本: 无法获取")
+
+                # 版本对比（仅单包时有用，多包时 cur_v 对不上不同包）
+                if len(pkgs) == 1 and (cur_v or cur_vc):
+                    has_update, detail = check_for_update(bv, bvc, cur_v, cur_vc)
+                    all_lines.append("")
+                    if has_update:
+                        all_lines.append(f">>> {detail}")
+                    else:
+                        all_lines.append("状态: ✓ 无变化")
+
+                all_lines.append("")
+                for name, s in results.items():
+                    if s.version:
+                        line = f"  {name}: {s.version}"
+                        if s.version_code:
+                            line += f" (vc:{s.version_code})"
+                    elif s.error:
+                        line = f"  {name}: ✗ {s.error[:40]}"
+                    else:
+                        line = f"  {name}: (无数据)"
+                    all_lines.append(line)
+
+            self.after(0, lambda: self._show_inline_result("\n".join(all_lines), False))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -637,6 +663,8 @@ class MainApplication(ctk.CTk):
         ctk.set_appearance_mode(self._settings.get("appearance_mode", "System"))
         ctk.set_default_color_theme(self._settings.get("color_theme", "blue"))
         self._apply_env_settings(self._settings)
+        # 强制刷新外观（即使 AppearanceModeTracker 未触发）
+        self._on_appearance_changed()
         self._status_label.configure(
             text=" 设置已保存" + (" | 代理已配置" if new_settings.get("http_proxy") else "")
         )

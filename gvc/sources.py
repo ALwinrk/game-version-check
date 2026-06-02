@@ -126,15 +126,16 @@ def _parse_http_response(html: str, url: str, extract_detail_fn=None) -> SourceR
     """通用 HTTP 响应解析 — 提取版本信息并构造 SourceResult."""
     version, vcode = extract_both(html)
     if extract_detail_fn:
-        detail_url = extract_detail_fn(html, url)
+        detail_url = extract_detail_fn(html, url) or url  # 提取失败则保留当前 URL
     else:
-        detail_url = _extract_detail_url(html, url)
+        detail_url = _extract_detail_url(html, url) or url
     if version:
         return SourceResult(version=version, version_code=vcode, detail_url=detail_url)
     return SourceResult(
         version_code=vcode,
         detail_url=detail_url,
-        error=f"未匹配版本 ({len(html)} 字节)",
+        error=f"仅匹配版本号 vc:{vcode} | 版本名未匹配 ({len(html)} 字节)" if vcode
+        else f"未匹配版本 ({len(html)} 字节)",
     )
 
 
@@ -182,11 +183,10 @@ def _extract_apkpure_detail_url(html: str, pkg: str) -> str | None:
     搜索页上有 app 链接，格式为 /<app-slug>/<package-name>
     或完整 URL https://apkpure.com/<slug>/<package>.
     """
-    import re as _re
-    escaped = _re.escape(pkg)
+    escaped = re.escape(pkg)
     # 匹配相对或绝对 URL，排除 /search 链接
     pattern = r'href="((?:https?://apkpure\.com)?/[^"]*' + escaped + r'[^"]*)"'
-    for m in _re.finditer(pattern, html):
+    for m in re.finditer(pattern, html):
         url = m.group(1)
         if "/search" not in url:
             return urljoin("https://apkpure.com", url)
@@ -228,7 +228,14 @@ def check_apkpure(pkg: str) -> SourceResult:
     if detail_url:
         detail_result = _check_apk_site(detail_url, js_fallback=False)
         if detail_result.version or detail_result.version_code:
+            # 确保 detail_url 是真实的详情页 URL（_parse_http_response 可能用正则
+            # 从 HTML 中提取到了其他链接，此处强制用我们实际访问的 URL）
+            if not detail_result.detail_url or "download.apkpure.com" in detail_result.detail_url:
+                detail_result.detail_url = detail_url
             return detail_result
+        # 即使没有版本号，也保留详情页 URL
+        if not detail_result.detail_url:
+            detail_result.detail_url = detail_url
         return detail_result
 
     # Step 5: 兜底 — apkpure.net
@@ -242,7 +249,13 @@ def check_apkcombo(pkg: str) -> SourceResult:
     (如 /honor-of-kings/com.levelinfinite.sgameGlobal/)。
     详情页 meta 含 "Latest Version: X.X.X"，解析器可直接提取。
     """
-    return _check_apk_site(f"https://apkcombo.com/api/app/{pkg}", js_fallback=False)
+    api_url = f"https://apkcombo.com/api/app/{pkg}"
+    result = _check_apk_site(api_url, js_fallback=False)
+    # APKCombo /api/app 会 302 到详情页，但 http_get 不返回最终 URL，
+    # 导致 _parse_http_response 的 detail_url 可能错位。对此做修正。
+    if result.version and (not result.detail_url or "api/app" in str(result.detail_url)):
+        result.detail_url = api_url  # 用 /api/app URL，capture_download_url 会再次 302
+    return result
 
 
 # ── 慢速 APK 站点 (StealthySession, 浏览器 + CF 绕过) ────

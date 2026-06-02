@@ -526,6 +526,63 @@ def extract_download_links(
         return []
 
 
+# ── 浏览器自动化抓取下载链接 ──────────────────────────
+
+
+def capture_download_url(detail_url: str, source_name: str, package: str = "") -> str | None:
+    """获取 APK 下载直链.
+
+    策略: Fetcher 提取 → 已知 URL 构造 → 浏览器渲染.
+    """
+    from gvc.http_client import http_get, js_render_get
+
+    # Step 1: Fetcher 快速获取 HTML
+    status, html = http_get(detail_url)
+    url = _extract_download_url_from_html(html, source_name)
+    if url:
+        return url
+
+    # Step 2: 已知 URL 模式（比浏览器快得多）
+    url = _build_known_download_url(source_name, package)
+    if url:
+        logger.info("%s 使用已知 URL 模式: %s", source_name, url[:80])
+        return url
+
+    # Step 3: 都不行才用浏览器渲染（最后手段）
+    logger.debug("%s 尝试浏览器渲染", source_name)
+    b_status, b_html = js_render_get(detail_url)
+    if b_status == 200:
+        url = _extract_download_url_from_html(b_html, source_name)
+        if url:
+            return url
+
+    return None
+
+
+def _extract_download_url_from_html(html: str, source_name: str) -> str | None:
+    """从 HTML 中提取下载链接."""
+    import re as _re
+    patterns = [
+        r'https?://d\.apkpure\.net/[^"\'\\s<>]+',
+        r'https?://apkcombo\.com/d\?u=[^"\'\\s<>]+',
+        r'https?://download\.apkcombo\.com/[^"\'\\s<>]+',
+    ]
+    for pat in patterns:
+        matches = _re.findall(pat, html)
+        if matches:
+            logger.info("%s HTML 提取到下载链接", source_name)
+            return matches[0]
+    return None
+
+
+def _build_known_download_url(source_name: str, package: str) -> str | None:
+    """根据已知的 URL 模式直接构造下载链接."""
+    if source_name == "APKPure":
+        return f"https://d.apkpure.net/b/APK/{package}?version=latest"
+    # APKCombo / APKMirror 下载链接有加密/鉴权参数，无法直接构造
+    return None
+
+
 # ── 主导函数 ────────────────────────────────────────────
 
 
@@ -612,7 +669,7 @@ def auto_download(
 
     valid_sources.sort(key=_source_priority, reverse=True)
 
-    # 逐个源尝试提取下载链接
+    # 逐个源用浏览器抓取真实下载链接（模拟 FDM 拦截行为）
     all_found: list[DownloadVariant] = []
     only_32bit: list[str] = []
 
@@ -620,16 +677,21 @@ def auto_download(
         if not sr.detail_url:
             continue
 
-        logger.info("  从 %s 提取下载链接: %s", source_name, sr.detail_url[:60])
-        variants = extract_download_links(source_name, sr.detail_url)
+        logger.info("  浏览器抓取 %s 下载链接: %s", source_name, sr.detail_url[:60])
+        captured_url = capture_download_url(sr.detail_url, source_name, package)
 
-        for v in variants:
-            if v.arch == "armeabi-v7a":
-                only_32bit.append(v.url)
-            else:
-                all_found.append(v)
+        if not captured_url:
+            logger.info("  %s 未捕获到下载链接，尝试下一个源", source_name)
+            continue
 
-        if all_found:
+        arch = detect_arch(captured_url)
+        variant = DownloadVariant(url=captured_url, arch=arch, source=source_name)
+        logger.info("  %s → %s (%s)", source_name, arch, captured_url[:80])
+
+        if arch == "armeabi-v7a":
+            only_32bit.append(captured_url)
+        else:
+            all_found.append(variant)
             break  # 找到 64 位/universal 就不再继续
 
     # 选出最佳变体
@@ -666,8 +728,9 @@ def auto_download(
     target_arch = best.arch if best else "armeabi-v7a"
     target_source = best.source if best else ""
 
-    # 生成文件名
-    filename = f"{package}_{best_version}_{target_arch}.apk"
+    # 生成文件名（handling 中文/特殊字符）
+    safe_version = best_version if best_version.isascii() else "unknown"
+    filename = f"{package}_{safe_version}_{target_arch}.apk"
 
     if dry_run:
         return {
